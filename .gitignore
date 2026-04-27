@@ -1,0 +1,36 @@
+# Byte-compiled / optimized & DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+.Python
+build/
+dist/
+*.egg-info/
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# Environment variables
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter Notebooks
+*.ipynb
+.ipynb_checkpoints/
+
+# Model files (if downloaded locally)
+*.pkl
+*.joblib
+*.h5

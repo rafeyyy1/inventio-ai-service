@@ -1,0 +1,20 @@
+# Inventio AI Service — Python Dependencies
+# Install: pip install -r requirements.txt
+
+# Web API
+fastapi>=0.100.0
+uvicorn[standard]>=0.23.0
+
+# Data Processing
+pandas>=1.5.0
+numpy>=1.23.0
+
+# Time Series Models
+statsmodels>=0.13.5
+
+# Validation & Serialization
+pydantic>=2.0.0
+
+# Optional: untuk Prophet (sudah ada tapi optional)
+# pystan==2.19.1.1
+# prophet>=1.1.0
