@@ -26,8 +26,8 @@ def detect_trend_strength(series: pd.Series) -> float:
     return float(abs(corr)) if not np.isnan(corr) else 0.0
 
 
-def select_model(series: pd.Series, trend_threshold: float = 0.3) -> Model:
-    """Select Linear when the series has a noticeable trend, otherwise Moving Average."""
+def select_model(series: pd.Series, trend_threshold: float = 0.7) -> Model:
+    """Select Linear when the series has a strong trend, otherwise Moving Average."""
     strength = detect_trend_strength(series)
     if strength >= trend_threshold:
         return LinearTrendModel()

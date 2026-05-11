@@ -58,29 +58,65 @@ def _to_series(item: ItemForecastRequest) -> pd.Series:
     return series.asfreq("D").ffill()
 
 
-def _aggregate_to_period(daily_forecast: pd.Series, period: PeriodType, horizon: int) -> List[tuple[datetime, float]]:
+def _aggregate_to_period(daily_forecast: pd.Series, period: PeriodType, horizon: int, historical_length: int = None) -> List[tuple[datetime, float]]:
     """Convert a daily forecast series into the requested period grain.
 
     For DAILY: return the first `horizon` daily values.
-    For WEEKLY/MONTHLY: sum daily values into buckets then take the first `horizon` buckets.
+    For MONTHLY: aggregate using variable bucket sizes:
+      - Period 1: 1 day
+      - Period 2: historical_length days (to match historical window)
+      - Period 3+: 30 days each
+    Returns list of (date, value) tuples where date represents the period month.
     """
     if period == PeriodType.DAILY:
         rows = list(daily_forecast.items())[:horizon]
         return [(idx.to_pydatetime(), float(val)) for idx, val in rows]
 
-    rule = "W" if period == PeriodType.WEEKLY else "MS"
-    bucketed = daily_forecast.resample(rule).sum()
-    rows = list(bucketed.items())[:horizon]
-    return [(idx.to_pydatetime(), float(val)) for idx, val in rows]
-
-
-def _periods_needed(period: PeriodType, horizon: int) -> int:
-    """How many daily steps to forecast to cover `horizon` periods."""
-    if period == PeriodType.DAILY:
-        return horizon
     if period == PeriodType.WEEKLY:
-        return horizon * 7 + 7  # extra buffer for week alignment
-    return horizon * 31 + 31  # extra buffer for month alignment
+        bucketed = daily_forecast.resample("W").sum()
+        rows = list(bucketed.items())[:horizon]
+        return [(idx.to_pydatetime(), float(val)) for idx, val in rows]
+    
+    # MONTHLY: custom aggregation with variable bucket sizes
+    # Each bucket gets assigned to a calendar month for dating purposes
+    result = []
+    current_idx = 0
+    
+    # Start from the next month after historical data ends
+    forecast_start = daily_forecast.index[0]
+    # Move to next month boundary
+    period_date = forecast_start.replace(day=1)
+    if period_date <= forecast_start:
+        # Add one month
+        if period_date.month == 12:
+            period_date = period_date.replace(year=period_date.year + 1, month=1)
+        else:
+            period_date = period_date.replace(month=period_date.month + 1)
+    
+    for period_num in range(horizon):
+        if period_num == 0:
+            bucket_size = 1
+        elif period_num == 1 and historical_length:
+            bucket_size = historical_length
+        else:
+            bucket_size = 30
+        
+        # Extract bucket_size days from forecast
+        if current_idx < len(daily_forecast):
+            bucket = daily_forecast.iloc[current_idx:current_idx + bucket_size]
+            if len(bucket) > 0:
+                period_value = bucket.sum()
+                result.append((period_date.to_pydatetime(), float(period_value)))
+                
+                # Move to next month for next iteration
+                if period_date.month == 12:
+                    period_date = period_date.replace(year=period_date.year + 1, month=1)
+                else:
+                    period_date = period_date.replace(month=period_date.month + 1)
+                
+                current_idx += bucket_size
+    
+    return result
 
 
 def _format_date(dt: datetime, period: PeriodType) -> str:
@@ -90,6 +126,15 @@ def _format_date(dt: datetime, period: PeriodType) -> str:
         iso = dt.isocalendar()
         return f"{iso[0]}-W{iso[1]:02d}Z"
     return dt.strftime("%Y-%m-%dZ")
+
+
+def _periods_needed(period: PeriodType, horizon: int) -> int:
+    """How many daily steps to forecast to cover `horizon` periods."""
+    if period == PeriodType.DAILY:
+        return horizon
+    if period == PeriodType.WEEKLY:
+        return horizon * 7 + 7  # extra buffer for week alignment
+    return horizon * 31 + 31  # extra buffer for month alignment
 
 
 def _unit_for(forecast_type: ForecastType) -> str:
@@ -115,7 +160,9 @@ def _forecast_one(
         daily_horizon = _periods_needed(params.period, params.horizon)
         daily_forecast = model.predict(horizon=daily_horizon)
 
-        rows = _aggregate_to_period(daily_forecast, params.period, params.horizon)
+        # Pass historical length for proper monthly aggregation
+        historical_length = len(item.historicalData)
+        rows = _aggregate_to_period(daily_forecast, params.period, params.horizon, historical_length)
         unit = _unit_for(forecast_type)
         points = [
             ForecastDataPoint(
@@ -138,12 +185,6 @@ def _forecast_one(
             status="error",
             error=str(exc),
         )
-
-
-@app.get("/health")
-def health() -> dict:
-    """Liveness probe used by container orchestrators."""
-    return {"status": "ok", "service": "inventio-ai-service"}
 
 
 @app.post("/api/predict", response_model=ForecastResponse)
