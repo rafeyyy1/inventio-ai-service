@@ -7,12 +7,6 @@ import pandas as pd
 
 
 class MovingAverageModel:
-    """Forecast as the mean of the last `window` observations.
-
-    The forecast is a constant value (the trailing mean), repeated for the
-    requested horizon. Suitable for series without strong trend or seasonality.
-    """
-
     def __init__(self, window: int = 30):
         if window < 1:
             raise ValueError("window must be >= 1")
@@ -33,7 +27,7 @@ class MovingAverageModel:
 
         effective_window = min(self.window, len(self.history))
         value = float(self.history.iloc[-effective_window:].mean())
-        value = max(value, 0.0)  # demand cannot be negative
+        value = max(value, 0.0)
 
         last_date = self.history.index[-1]
         index = pd.date_range(
