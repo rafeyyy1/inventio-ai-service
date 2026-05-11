@@ -1,93 +1,45 @@
-"""
-Data Preparation Module — Inventio AI Service
-Menyiapkan data time series untuk forecasting.
-"""
+"""Load and reshape the retail-store-inventory dataset for forecasting."""
+
+from pathlib import Path
+from typing import Optional
 
 import pandas as pd
-import numpy as np
-from pathlib import Path
+
+DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+DEFAULT_DATASET = DATA_DIR / "retail_store_inventory.csv"
 
 
-def load_dataset(path: str = None) -> pd.DataFrame:
+def load_dataset(path: Optional[Path] = None) -> pd.DataFrame:
+    """Load the retail-store-inventory CSV as a long-format dataframe.
+
+    Expected columns: Date, Store ID, Product ID, Units Sold, Price, ...
     """
-    Load dataset dari file CSV.
-    Jika path tidak diberikan, gunakan default dataset Kaggle.
-    """
-    if path is None:
-        path = Path(__file__).parent.parent / "data" / "sample_sales.csv"
-    else:
-        path = Path(path)
-
-    df = pd.read_csv(path)
-    return df
+    path = Path(path) if path else DEFAULT_DATASET
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Dataset not found at {path}. "
+            "Download it from Kaggle and place it in the data/ folder."
+        )
+    df = pd.read_csv(path, parse_dates=["Date"])
+    return df.sort_values(["Store ID", "Product ID", "Date"]).reset_index(drop=True)
 
 
-def parse_datetime(df: pd.DataFrame, date_col: str = "date") -> pd.DataFrame:
-    """
-    Parsing kolom date ke datetime index.
-    Ini penting karena:
-    1. Forecasting memerlukan urutan waktu yang benar
-    2. Resampling/agregasi time series butuh datetime type
-    3. Model (ARIMA, Prophet) memerlukan datetime index
-    """
-    df = df.copy()
-    df[date_col] = pd.to_datetime(df[date_col])
-    df = df.set_index(date_col).sort_index()
-    return df
+def get_series(
+    df: pd.DataFrame,
+    store_id: str,
+    product_id: str,
+    value_col: str = "Units Sold",
+) -> pd.Series:
+    """Extract a single (store, product) time series as a daily-frequency Series."""
+    mask = (df["Store ID"] == store_id) & (df["Product ID"] == product_id)
+    sub = df.loc[mask]
+    if sub.empty:
+        raise ValueError(f"No rows for store={store_id} product={product_id}")
+    series = sub.set_index("Date")[value_col].astype(float)
+    return series.asfreq("D").ffill()
 
 
-def aggregate_daily(df: pd.DataFrame, sales_col: str = "sales") -> pd.Series:
-    """
-    Agregasi data per hari.
-    Jika ada duplikasi tanggal, dijumlahkan (sum).
-    """
-    # df sudah punya datetime index dari parse_datetime
-    if df.index.name == "date" and sales_col in df.columns:
-        daily = df[sales_col].resample("D").sum()
-    else:
-        daily = df.resample("D").sum()
-
-    # Fill missing days dengan 0
-    daily = daily.fillna(0)
-    return daily
-
-
-def prepare_for_model(df: pd.DataFrame, sales_col: str = "sales") -> pd.Series:
-    """
-    Pipeline lengkap persiapan data:
-    1. Load
-    2. Parse datetime
-    3. Agregasi daily
-    4. Return clean series
-
-    Kenapa penting untuk forecasting:
-    - Model time series (ARIMA, MA) butuh data berurutan per waktu
-    - Missing days harus di-handle (fill/NaN)
-    - Outlier bisa merusak prediksi
-    """
-    df = parse_datetime(df)
-    daily = aggregate_daily(df, sales_col)
-    return daily
-
-
-def get_train_test_split(
-    series: pd.Series,
-    test_size: int = 30
-) -> tuple[pd.Series, pd.Series]:
-    """
-    Split data jadi train & test untuk evaluasi.
-    test_size = jumlah hari terakhir sebagai test set.
-    """
-    train = series[:-test_size]
-    test = series[-test_size:]
-    return train, test
-
-
-def resample_weekly(series: pd.Series) -> pd.Series:
-    """Resample ke mingguan untuk analisis tren."""
-    return series.resample("W").sum()
-
-
-def resample_monthly(series: pd.Series) -> pd.Series:
-    """Resample ke bulanan untuk laporan."""
-    return series.resample("ME").sum()
+def train_test_split(series: pd.Series, test_size: int = 30) -> tuple[pd.Series, pd.Series]:
+    if test_size <= 0 or test_size >= len(series):
+        raise ValueError(f"test_size must be in (0, {len(series)})")
+    return series.iloc[:-test_size], series.iloc[-test_size:]

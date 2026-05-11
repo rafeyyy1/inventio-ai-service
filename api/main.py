@@ -1,194 +1,169 @@
-"""
-FastAPI Main — Inventio AI Service
-Batch Forecasting API untuk sistem Inventio — Inventory Management.
+"""FastAPI application for the Inventio forecasting service.
+
+Single endpoint: POST /api/predict (batch forecasting per item).
 """
 
-import sys
+import os
 import uuid
-from pathlib import Path
+from datetime import datetime, timezone
+from typing import List
 
-# Add parent to path
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
+import pandas as pd
+from dateutil.relativedelta import relativedelta
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from datetime import datetime
 
-# Local imports
-from models import MovingAverageModel
 from api.schemas import (
+    ForecastDataPoint,
+    ForecastParameters,
     ForecastRequest,
     ForecastResponse,
-    ForecastParameters,
+    ForecastType,
     ItemForecastRequest,
     ItemForecastResult,
-    ForecastDataPoint,
     PeriodType,
-    ForecastType,
 )
+from models import select_model
 
-# ==================== APP SETUP ====================
 app = FastAPI(
     title="Inventio AI Service",
-    description="Batch forecasting API untuk sistem Inventio — UMKM Inventory Management",
-    version="2.0.0",
+    description="Batch forecasting service for the Inventio inventory system.",
+    version="1.0.0",
 )
 
+# CORS: read allowed origins from env, fall back to localhost for dev.
+_allowed = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:5173")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[o.strip() for o in _allowed.split(",") if o.strip()],
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
 
 
-# ==================== HELPER FUNCTIONS ====================
-
-def historical_to_series(item: ItemForecastRequest) -> "pd.Series":
-    """Convert historical data dari request ke pandas Series."""
-    import pandas as pd
-
-    data = [(p.date, p.value) for p in item.historicalData]
-    data.sort(key=lambda x: x[0])
-
-    dates = [datetime.fromisoformat(d.replace("Z", "+00:00")) for d, _ in data]
-    values = [v for _, v in data]
-
-    series = pd.Series(data=values, index=dates, name="value")
-    series.index.name = "date"
-    return series
+def _parse_iso(s: str) -> datetime:
+    """Parse an ISO 8601 string ending in Z or with offset."""
+    return datetime.fromisoformat(s.replace("Z", "+00:00"))
 
 
-def get_unit(forecast_type: ForecastType) -> str:
-    """Get unit berdasarkan tipe forecast."""
+def _to_series(item: ItemForecastRequest) -> pd.Series:
+    """Convert request historical data to a daily Series."""
+    points = sorted(item.historicalData, key=lambda p: p.date)
+    index = pd.DatetimeIndex([_parse_iso(p.date) for p in points])
+    values = [p.value for p in points]
+    series = pd.Series(values, index=index, name="value", dtype=float)
+    # Drop tzinfo so asfreq works predictably, then make daily.
+    series.index = series.index.tz_convert(None) if series.index.tz is not None else series.index
+    return series.asfreq("D").ffill()
+
+
+def _aggregate_to_period(daily_forecast: pd.Series, period: PeriodType, horizon: int) -> List[tuple[datetime, float]]:
+    """Convert a daily forecast series into the requested period grain.
+
+    For DAILY: return the first `horizon` daily values.
+    For WEEKLY/MONTHLY: sum daily values into buckets then take the first `horizon` buckets.
+    """
+    if period == PeriodType.DAILY:
+        rows = list(daily_forecast.items())[:horizon]
+        return [(idx.to_pydatetime(), float(val)) for idx, val in rows]
+
+    rule = "W" if period == PeriodType.WEEKLY else "MS"
+    bucketed = daily_forecast.resample(rule).sum()
+    rows = list(bucketed.items())[:horizon]
+    return [(idx.to_pydatetime(), float(val)) for idx, val in rows]
+
+
+def _periods_needed(period: PeriodType, horizon: int) -> int:
+    """How many daily steps to forecast to cover `horizon` periods."""
+    if period == PeriodType.DAILY:
+        return horizon
+    if period == PeriodType.WEEKLY:
+        return horizon * 7 + 7  # extra buffer for week alignment
+    return horizon * 31 + 31  # extra buffer for month alignment
+
+
+def _format_date(dt: datetime, period: PeriodType) -> str:
+    if period == PeriodType.MONTHLY:
+        return dt.strftime("%Y-%m-01Z")
+    if period == PeriodType.WEEKLY:
+        iso = dt.isocalendar()
+        return f"{iso[0]}-W{iso[1]:02d}Z"
+    return dt.strftime("%Y-%m-%dZ")
+
+
+def _unit_for(forecast_type: ForecastType) -> str:
     return "units" if forecast_type == ForecastType.STOCK_DEMAND else "IDR"
 
 
-def generate_forecast_dates(last_date: datetime, horizon: int, period: PeriodType) -> list:
-    """Generate list tanggal forecast berdasarkan period."""
-    from dateutil.relativedelta import relativedelta
-
-    dates = []
-    for i in range(horizon):
-        if period == PeriodType.DAILY:
-            current = last_date + relativedelta(days=i + 1)
-            date_str = current.strftime("%Y-%m-%dZ")
-        elif period == PeriodType.WEEKLY:
-            current = last_date + relativedelta(weeks=i + 1)
-            iso = current.isocalendar()
-            date_str = f"{iso[0]}-W{iso[1]:02d}Z"
-        else:
-            current = last_date + relativedelta(months=i + 1)
-            date_str = current.strftime("%Y-%m-01Z")
-
-        dates.append(date_str)
-
-    return dates
-
-
-def forecast_item(
+def _forecast_one(
     item: ItemForecastRequest,
     forecast_type: ForecastType,
     params: ForecastParameters,
 ) -> ItemForecastResult:
-    """Forecast untuk satu item. Returns ItemForecastResult dengan hasil atau error."""
     try:
-        series = historical_to_series(item)
-
+        series = _to_series(item)
         if len(series) < 2:
             return ItemForecastResult(
                 itemId=item.itemId,
                 status="error",
-                error="Minimal 2 data point historis diperlukan",
+                error="At least 2 historical data points are required",
             )
 
-        model = MovingAverageModel(window=min(len(series), 30), name="moving_average")
+        model = select_model(series)
         model.fit(series)
-        forecast_series = model.predict(horizon=params.horizon)
+        daily_horizon = _periods_needed(params.period, params.horizon)
+        daily_forecast = model.predict(horizon=daily_horizon)
 
-        last_date = series.index[-1]
-        unit = get_unit(forecast_type)
-        forecast_dates = generate_forecast_dates(last_date, params.horizon, params.period)
-
-        forecast_points = []
-        for i, (idx, val) in enumerate(forecast_series.items()):
-            forecast_points.append(
-                ForecastDataPoint(
-                    forecastDate=forecast_dates[i] if i < len(forecast_dates) else idx.strftime("%Y-%m-%dZ"),
-                    forecastValue=round(float(val), 2),
-                    unit=unit,
-                )
+        rows = _aggregate_to_period(daily_forecast, params.period, params.horizon)
+        unit = _unit_for(forecast_type)
+        points = [
+            ForecastDataPoint(
+                forecastDate=_format_date(dt, params.period),
+                forecastValue=round(val, 2),
+                unit=unit,
             )
+            for dt, val in rows
+        ]
 
         return ItemForecastResult(
             itemId=item.itemId,
             status="success",
-            forecast=forecast_points,
+            forecast=points,
+            modelUsed=type(model).__name__,
         )
-
-    except Exception as e:
+    except Exception as exc:  # noqa: BLE001 - we want to surface any failure per-item
         return ItemForecastResult(
             itemId=item.itemId,
             status="error",
-            error=str(e),
+            error=str(exc),
         )
 
 
-# ==================== ENDPOINTS ====================
+@app.get("/health")
+def health() -> dict:
+    """Liveness probe used by container orchestrators."""
+    return {"status": "ok", "service": "inventio-ai-service"}
+
 
 @app.post("/api/predict", response_model=ForecastResponse)
-async def predict_forecast(request: ForecastRequest):
+def predict(request: ForecastRequest) -> ForecastResponse:
+    """Batch forecast for one or more items.
+
+    See `docs/api_contract.md` for the full request/response shape.
     """
-    Batch forecasting endpoint.
+    if not request.items:
+        raise HTTPException(status_code=400, detail="At least one item is required")
 
-    POST /predict
+    job_id = f"forecast-job-{uuid.uuid4().hex[:8]}"
+    results = [
+        _forecast_one(item, request.forecastType, request.forecastParameters)
+        for item in request.items
+    ]
+    return ForecastResponse(jobId=job_id, results=results)
 
-    Request Body:
-    {
-        "forecastType": "stock_demand" | "sales_revenue",
-        "forecastParameters": {
-            "period": "daily" | "weekly" | "monthly",
-            "horizon": 3
-        },
-        "items": [
-            {
-                "itemId": "uuid-produk-A001",
-                "historicalData": [
-                    { "date": "2026-03-15T00:00:00Z", "value": 20 },
-                    { "date": "2026-04-15T00:00:00Z", "value": 25 }
-                ]
-            }
-        ]
-    }
-
-    Returns:
-    {
-        "jobId": "forecast-job-123",
-        "results": [
-            {
-                "itemId": "uuid-produk-A001",
-                "status": "success",
-                "forecast": [
-                    { "forecastDate": "2026-05-01Z", "forecastValue": 28, "unit": "units" }
-                ]
-            }
-        ]
-    }
-    """
-    try:
-        job_id = f"forecast-job-{uuid.uuid4().hex[:8]}"
-
-        results = []
-        for item in request.items:
-            result = forecast_item(item, request.forecastType, request.forecastParameters)
-            results.append(result)
-
-        return ForecastResponse(jobId=job_id, results=results)
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error processing forecast: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run("api.main:app", host="0.0.0.0", port=8000, reload=True)

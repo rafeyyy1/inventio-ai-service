@@ -1,14 +1,13 @@
+"""Request and response schemas for POST /api/predict.
+
+Matches the contract in `docs/Spesifikasi_API_Forecasting_AI.pdf`.
 """
-Pydantic Schemas — Inventio AI Service
-Definisi request/response untuk batch forecasting API.
-"""
+
+from enum import Enum
+from typing import List, Optional
 
 from pydantic import BaseModel, Field
-from typing import List, Optional
-from enum import Enum
 
-
-# ==================== ENUMS ====================
 
 class ForecastType(str, Enum):
     STOCK_DEMAND = "stock_demand"
@@ -21,51 +20,43 @@ class PeriodType(str, Enum):
     MONTHLY = "monthly"
 
 
-# ==================== REQUEST SCHEMAS ====================
-
 class HistoricalDataPoint(BaseModel):
-    """Satu titik data historis."""
-    date: str = Field(description="ISO 8601 date string, contoh: 2026-03-15T00:00:00Z")
-    value: float = Field(description="Nilai historical (unit untuk stock_demand, IDR untuk sales_revenue)")
+    date: str = Field(description="ISO 8601 date, e.g. 2026-03-15T00:00:00Z")
+    value: float = Field(description="Units sold or revenue in IDR")
 
 
 class ItemForecastRequest(BaseModel):
-    """Request untuk satu item/produk."""
-    itemId: str = Field(description="UUID produk")
-    historicalData: List[HistoricalDataPoint] = Field(min_length=2, description="Minimal 2 data point historis")
+    itemId: str = Field(description="Product UUID")
+    historicalData: List[HistoricalDataPoint] = Field(
+        min_length=2, description="At least 2 historical points required"
+    )
 
 
 class ForecastParameters(BaseModel):
-    """Parameter untuk forecasting."""
-    period: PeriodType = Field(default=PeriodType.MONTHLY, description="Period: daily | weekly | monthly")
-    horizon: int = Field(default=3, ge=1, le=12, description="Jumlah periode ke depan yang di-prediksi")
+    period: PeriodType = Field(default=PeriodType.MONTHLY)
+    horizon: int = Field(default=3, ge=1, le=12, description="Number of future periods")
 
 
 class ForecastRequest(BaseModel):
-    """Request utama untuk batch forecasting."""
-    forecastType: ForecastType = Field(description="Tipe forecast: stock_demand atau sales_revenue")
-    forecastParameters: ForecastParameters = Field(description="Parameter forecast")
-    items: List[ItemForecastRequest] = Field(min_length=1, description="Array item yang akan di-forecast")
+    forecastType: ForecastType
+    forecastParameters: ForecastParameters
+    items: List[ItemForecastRequest] = Field(min_length=1)
 
-
-# ==================== RESPONSE SCHEMAS ====================
 
 class ForecastDataPoint(BaseModel):
-    """Satu titik hasil forecast."""
-    forecastDate: str = Field(description="Tanggal forecast, contoh: 2026-05-01Z")
-    forecastValue: float = Field(description="Nilai forecast")
-    unit: str = Field(description="Satuan: units atau IDR")
+    forecastDate: str
+    forecastValue: float
+    unit: str
 
 
 class ItemForecastResult(BaseModel):
-    """Hasil forecast untuk satu item."""
-    itemId: str = Field(description="UUID produk yang di-request")
-    status: str = Field(description="Status: success atau error")
-    forecast: List[ForecastDataPoint] = Field(default_factory=list, description="Array hasil forecast")
-    error: Optional[str] = Field(default=None, description="Pesan error jika status = error")
+    itemId: str
+    status: str = Field(description="success or error")
+    forecast: List[ForecastDataPoint] = Field(default_factory=list)
+    error: Optional[str] = None
+    modelUsed: Optional[str] = None
 
 
 class ForecastResponse(BaseModel):
-    """Response utama batch forecasting."""
-    jobId: str = Field(description="ID unik job untuk tracking")
-    results: List[ItemForecastResult] = Field(description="Array hasil per item")
+    jobId: str
+    results: List[ItemForecastResult]

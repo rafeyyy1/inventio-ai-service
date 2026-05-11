@@ -1,132 +1,226 @@
 # Inventio AI Service
 
-Forecasting API untuk Inventio — Sistem Manajemen Inventaris UMKM.
+Batch forecasting microservice for the **Inventio** inventory management system. Predicts future stock demand and sales revenue per product, exposed as a single HTTP endpoint.
 
-## Struktur Project
+This service is a separate repository from the main Inventio backend. The backend (Node.js + Express) calls this service over HTTP when it needs forecasts.
+
+## What it does
+
+- **Input:** an array of products, each with its own daily historical demand.
+- **Output:** forecast values per product for the next N periods (daily, weekly, or monthly).
+- **Models:** Moving Average (default) and Linear Regression (auto-selected when the series shows a clear trend).
+
+The contract matches `docs/Spesifikasi_API_Forecasting_AI.pdf`: one batch endpoint, one request → one job ID with per-item results.
+
+## Project layout
 
 ```
 ai_service/
-├── data/
-│   └── sample_sales.csv       # Dataset time series (date, sales, inventory, price)
-├── models/
-│   ├── moving_average.py      # Model utama: Moving Average (MAE ~19)
-│   └── arima_model.py         # Model advanced: ARIMA
 ├── api/
-│   ├── main.py                # FastAPI app
-│   └── schemas.py             # Pydantic schemas (request/response)
+│   ├── main.py          FastAPI app and the /api/predict endpoint
+│   └── schemas.py       Pydantic request/response models
+├── models/
+│   ├── moving_average.py
+│   ├── linear_trend.py
+│   └── selector.py      Picks the model based on trend strength
 ├── utils/
-│   ├── data_prep.py           # Data loading & preparation
-│   ├── evaluation.py          # MAE & MAPE metrics
-│   └── business_logic.py      # Trend analysis & inventory alerts
+│   ├── data_prep.py     Loads and reshapes the Kaggle dataset
+│   ├── evaluation.py    MAE, RMSE, WAPE
+│   └── inventory_alert.py
+├── scripts/
+│   ├── evaluate.py                  Compare models on the dataset
+│   └── generate_sample_request.py   Build a sample POST body
+├── tests/               pytest suite (12 tests)
+├── data/
+│   └── retail_store_inventory.csv   Kaggle dataset for eval & demos
+├── docs/
+│   ├── AI_DESIGN.md     Why these models, with the eval numbers
+│   ├── NETWORKING.md    Protocol, ports, CORS, how the backend calls it
+│   ├── DEPLOYMENT.md    Step-by-step Azure Container Apps deploy
+│   └── INTEGRATION.md   Sample Express + Prisma code for the backend
+├── examples/
+│   └── sample_request.json          Ready-to-use POST body
+├── Dockerfile
 ├── requirements.txt
-└── README.md
+├── requirements-dev.txt
+└── .env.example
 ```
 
-## Install
+## Quick start
 
 ```bash
+git clone <this-repo>
 cd ai_service
+python -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-```
+cp .env.example .env
 
-## Run API
-
-```bash
-cd ai_service
 uvicorn api.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-API akan jalan di `http://localhost:8000`
-Dokumentasi interaktif: `http://localhost:8000/docs`
+Open `http://localhost:8000/docs` for the auto-generated Swagger UI.
 
-## API Endpoints
+## API
 
-| Method | Endpoint | Deskripsi |
-|--------|----------|-----------|
-| GET | `/` | Info service |
-| GET | `/health` | Health check |
-| GET | `/forecast?horizon=7&model=moving_average` | Forecast + recommendation |
-| GET | `/evaluate?test_size=30` | Bandingkan MA vs ARIMA |
-| POST | `/retrain` | Retrain model |
+### `POST /api/predict`
 
-## Contoh Penggunaan
-
-### Forecast Moving Average (7 hari)
-```bash
-curl "http://localhost:8000/forecast?horizon=7&model=moving_average&window=30"
-```
-
-### Forecast ARIMA (14 hari)
-```bash
-curl "http://localhost:8000/forecast?horizon=14&model=arima"
-```
-
-### Evaluasi Model
-```bash
-curl "http://localhost:8000/evaluate?test_size=30"
-```
-
-## Response Contoh
+Request body:
 
 ```json
 {
-  "model": "moving_average",
-  "horizon": 7,
-  "forecast": [
-    {"date": "2014-10-30", "forecast": 93.45},
-    {"date": "2014-10-31", "forecast": 93.45},
-    {"date": "2014-11-01", "forecast": 93.45}
-  ],
-  "trend": "up",
-  "pct_change": 12.3,
-  "recommendation": "restock",
-  "message": "⚠️ Stok perlu ditambah! Permintaan naik 12.3% (~93 unit/hari). Estimasi stok habis dalam 8 hari."
+  "forecastType": "stock_demand",
+  "forecastParameters": { "period": "monthly", "horizon": 3 },
+  "items": [
+    {
+      "itemId": "uuid-product-A001",
+      "historicalData": [
+        { "date": "2025-11-01T00:00:00Z", "value": 20 },
+        { "date": "2025-11-02T00:00:00Z", "value": 25 }
+      ]
+    }
+  ]
 }
 ```
 
-## Integrasi dengan Backend Node.js
+Response:
 
-Backend Inventio memanggil AI service via HTTP:
-
-```javascript
-// Contoh dari server Node.js Inventio
-const forecast = await fetch('http://localhost:8000/forecast?horizon=7&model=moving_average');
-const data = await forecast.json();
-
-// Gunakan data.forecast untuk tampil di frontend
-// Gunakan data.recommendation untuk logika bisnis
+```json
+{
+  "jobId": "forecast-job-c5839c79",
+  "results": [
+    {
+      "itemId": "uuid-product-A001",
+      "status": "success",
+      "forecast": [
+        { "forecastDate": "2025-12-01Z", "forecastValue": 22.5, "unit": "units" },
+        { "forecastDate": "2026-01-01Z", "forecastValue": 22.5, "unit": "units" },
+        { "forecastDate": "2026-02-01Z", "forecastValue": 22.5, "unit": "units" }
+      ],
+      "modelUsed": "MovingAverageModel"
+    }
+  ]
+}
 ```
 
-**Catatan**: Untuk production, AI service deploy terpisah (Azure Container Instances / Docker) dan diakses via domain.
+- `forecastType`: `stock_demand` (unit: `units`) or `sales_revenue` (unit: `IDR`).
+- `forecastParameters.period`: `daily` | `weekly` | `monthly`.
+- `forecastParameters.horizon`: 1..12.
+- Each item is forecast independently. Errors on one item don't fail the whole batch — that item gets `status: "error"` with an `error` message.
 
-## Cloud Deployment (Azure)
+### `GET /health`
 
-Arsitektur deployment:
+Returns `{"status": "ok"}`. Used by Docker and cloud platforms as a liveness probe.
 
+## Try it
+
+In one terminal:
+
+```bash
+uvicorn api.main:app --reload
 ```
-[Frontend React] → [Backend Node.js] → [AI Service (FastAPI)]
-                                        ↓
-                               [Azure Container Instances]
-                               atau [Azure App Service]
+
+In another:
+
+```bash
+python -m scripts.generate_sample_request --items 3 --history 90 > sample_request.json
+curl -X POST http://localhost:8000/api/predict \
+     -H "Content-Type: application/json" \
+     -d @sample_request.json | python -m json.tool
 ```
 
-Steps deployment:
-1. Dockerize: `docker build -t inventio-ai .`
-2. Push ke Azure Container Registry
-3. Deploy ke Azure Container Instances (serverless)
-4. Set environment variable untuk database connection
-5. Backend akses AI service via URL publik
+## Model choice
 
-## Model Comparison (Hasil)
+Five models were compared on the Kaggle [Retail Store Inventory Forecasting Dataset](https://www.kaggle.com/datasets/anirudhchauhan/retail-store-inventory-forecasting-dataset) (30 random store-product pairs, 30-day holdout):
 
-| Model | MAE | MAPE |
-|-------|-----|------|
-| Moving Average (w=30) | ~19 | ~18% |
-| ARIMA (5,1,2) | ~22 | ~20% |
-| Prophet | ~28 | ~25% |
+| Model | MAE | RMSE | WAPE |
+|---|---:|---:|---:|
+| Linear Regression | 87.01 | 104.17 | 66.97% |
+| Moving Average (w=30) | 87.35 | 105.51 | 67.26% |
+| Moving Average (w=14) | 88.63 | 106.88 | 68.04% |
+| Moving Average (w=7) | 92.85 | 112.49 | 71.38% |
+| ARIMA(2,1,1) | 86.88 | 104.08 | 66.83% |
 
-**Kesimpulan**: Moving Average dipilih sebagai model utama karena:
-- MAE paling rendah → prediksi paling akurat
-- Simpel dan cepat
-- Mudah di-interpretasi oleh UMKM
-- Resource-efficient untuk cloud deployment
+ARIMA wins by ~0.5% MAE but adds ~30 MB of dependencies (statsmodels), occasional convergence warnings, and slower batch inference. The gain doesn't justify the cost in a real-time API, so the production build uses only Moving Average and Linear Regression. The service picks Linear when the series has a clear trend (|correlation with time| ≥ 0.3) and Moving Average otherwise.
+
+Reproduce the table:
+
+```bash
+python -m scripts.evaluate --samples 30 --test-size 30
+```
+
+WAPE values are high (~67%) because the dataset is intentionally noisy — daily demand fluctuates a lot at the per-product level. The metric reflects the inherent difficulty of the data, not the model. Production demand from the Inventio database should be less noisy because it aggregates real transactions.
+
+## Tests
+
+```bash
+pip install -r requirements-dev.txt
+pytest -v
+```
+
+12 tests cover the models, the selector, and the API end-to-end.
+
+## Docker
+
+```bash
+docker build -t inventio-ai-service .
+docker run -p 8000:8000 --env-file .env inventio-ai-service
+```
+
+The image is ~250 MB (slim Python base + pandas/sklearn). Health check is built in.
+
+## Deploying to Azure
+
+1. Push image to Azure Container Registry:
+   ```bash
+   az acr build --registry <your-acr> --image inventio-ai-service:latest .
+   ```
+2. Deploy to Azure Container Apps (recommended) or Container Instances:
+   ```bash
+   az containerapp create \
+     --name inventio-ai-service \
+     --resource-group <rg> \
+     --image <your-acr>.azurecr.io/inventio-ai-service:latest \
+     --target-port 8000 \
+     --ingress external \
+     --env-vars ALLOWED_ORIGINS="https://your-frontend.com,https://your-backend.com"
+   ```
+3. In the Inventio backend, set `AI_SERVICE_URL` to the public ingress URL and call `POST {AI_SERVICE_URL}/api/predict`.
+
+## How the backend calls this service
+
+From the Inventio Express server:
+
+```js
+const res = await fetch(`${process.env.AI_SERVICE_URL}/api/predict`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    forecastType: "stock_demand",
+    forecastParameters: { period: "monthly", horizon: 3 },
+    items: products.map(p => ({
+      itemId: p.id,
+      historicalData: p.movements.map(m => ({
+        date: m.createdAt.toISOString(),
+        value: m.quantity,
+      })),
+    })),
+  }),
+});
+const { jobId, results } = await res.json();
+// Persist each result to the Forecast table:
+//   { productId, type, forecastValue, unit, forecastDate }
+```
+
+The shape of `forecast[]` lines up directly with the `Forecast` model in `schema.prisma`. See `docs/INTEGRATION.md` for a full Express + Prisma example.
+
+## Further reading
+
+- `docs/AI_DESIGN.md` — model comparison and selection rationale (the AI part of Senpro grading)
+- `docs/NETWORKING.md` — network topology, ports, CORS (the networking part)
+- `docs/DEPLOYMENT.md` — Azure deployment walkthrough (the cloud part)
+- `docs/INTEGRATION.md` — copy-paste backend code
+
+## License
+
+For coursework use (Praktikum Senior Project, DTETI UGM 2026).

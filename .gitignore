@@ -1,36 +1,24 @@
-# Byte-compiled / optimized & DLL files
 __pycache__/
 *.py[cod]
-*$py.class
-
-# Distribution / packaging
-.Python
-build/
-dist/
+*.pyo
 *.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
 
-# Virtual environments
+.venv/
 venv/
 env/
-.venv/
 
-# Environment variables
 .env
 .env.local
 
-# IDE
 .vscode/
 .idea/
-
-# OS
 .DS_Store
-Thumbs.db
 
-# Jupyter Notebooks
-*.ipynb
-.ipynb_checkpoints/
+# Keep the small dataset in git for demo/eval reproducibility.
+# If the file grows too big, uncomment the next line and host elsewhere.
+# data/retail_store_inventory.csv
 
-# Model files (if downloaded locally)
-*.pkl
-*.joblib
-*.h5
+sample_request.json
