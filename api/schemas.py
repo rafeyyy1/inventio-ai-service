@@ -1,8 +1,3 @@
-"""Request and response schemas for POST /api/predict.
-
-Matches the contract in `docs/Spesifikasi_API_Forecasting_AI.pdf`.
-"""
-
 from enum import Enum
 from typing import List, Optional
 

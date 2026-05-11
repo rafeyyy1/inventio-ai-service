@@ -8,12 +8,6 @@ from sklearn.linear_model import LinearRegression
 
 
 class LinearTrendModel:
-    """Linear regression over the time index.
-
-    Fits y = a + b*t where t is the integer day index. Useful when the series
-    has a clear upward or downward trend that Moving Average cannot capture.
-    """
-
     def __init__(self):
         self._model: Optional[LinearRegression] = None
         self.history: Optional[pd.Series] = None
@@ -36,7 +30,7 @@ class LinearTrendModel:
         n = len(self.history)
         X_future = np.arange(n, n + horizon).reshape(-1, 1)
         values = self._model.predict(X_future)
-        values = np.maximum(values, 0.0)  # clamp negatives
+        values = np.maximum(values, 0.0)
 
         last_date = self.history.index[-1]
         index = pd.date_range(

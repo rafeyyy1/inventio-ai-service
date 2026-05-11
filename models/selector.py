@@ -12,10 +12,6 @@ Model = Union[MovingAverageModel, LinearTrendModel]
 
 
 def detect_trend_strength(series: pd.Series) -> float:
-    """Return the absolute Pearson correlation between value and time index.
-
-    Values close to 0 mean no linear trend; values close to 1 mean strong trend.
-    """
     if len(series) < 3:
         return 0.0
     y = series.values.astype(float)
@@ -27,7 +23,7 @@ def detect_trend_strength(series: pd.Series) -> float:
 
 
 def select_model(series: pd.Series, trend_threshold: float = 0.7) -> Model:
-    """Select Linear when the series has a strong trend, otherwise Moving Average."""
+    """Auto-select Linear Regression jika trend strong (≥0.7), else Moving Average."""
     strength = detect_trend_strength(series)
     if strength >= trend_threshold:
         return LinearTrendModel()
