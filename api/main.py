@@ -55,48 +55,35 @@ def _to_series(item: ItemForecastRequest) -> pd.Series:
     return series.asfreq("D").ffill()
 
 
-def _aggregate_to_period(daily_forecast: pd.Series, period: PeriodType, horizon: int, historical_length: int = None) -> List[tuple[datetime, float]]:
-    """Aggregate daily forecast ke period grain dengan bucket size variable untuk monthly."""
+def _aggregate_daily_to_period(daily_forecast: pd.Series, period: PeriodType, horizon: int) -> List[tuple[datetime, float]]:
+    """Aggregate daily forecast to monthly/weekly/daily based on period and horizon."""
     if period == PeriodType.DAILY:
         rows = list(daily_forecast.items())[:horizon]
         return [(idx.to_pydatetime(), float(val)) for idx, val in rows]
 
     if period == PeriodType.WEEKLY:
-        bucketed = daily_forecast.resample("W").sum()
-        rows = list(bucketed.items())[:horizon]
+        # Resample to weekly and take horizon weeks
+        weekly = daily_forecast.resample("W").mean()
+        rows = list(weekly.items())[:horizon]
         return [(idx.to_pydatetime(), float(val)) for idx, val in rows]
-    
-    result = []
-    current_idx = 0
-    
-    forecast_start = daily_forecast.index[0]
-    period_date = forecast_start.replace(day=1)
-    if period_date <= forecast_start:
-        if period_date.month == 12:
-            period_date = period_date.replace(year=period_date.year + 1, month=1)
-        else:
-            period_date = period_date.replace(month=period_date.month + 1)
-    
-    for period_num in range(horizon):
-        if period_num == 0:
-            bucket_size = 1
-        elif period_num == 1 and historical_length:
-            bucket_size = historical_length
-        else:
-            bucket_size = 30
-        
-        if current_idx < len(daily_forecast):
-            bucket = daily_forecast.iloc[current_idx:current_idx + bucket_size]
-            if len(bucket) > 0:
-                period_value = bucket.sum()
-                result.append((period_date.to_pydatetime(), float(period_value)))
-                if period_date.month == 12:
-                    period_date = period_date.replace(year=period_date.year + 1, month=1)
-                else:
-                    period_date = period_date.replace(month=period_date.month + 1)
-                current_idx += bucket_size
-    
-    return result
+
+    # MONTHLY
+    # Resample to monthly and take horizon months
+    monthly = daily_forecast.resample("MS").mean()
+    rows = list(monthly.items())[:horizon]
+    return [(idx.to_pydatetime(), float(val)) for idx, val in rows]
+
+
+def _periods_needed(period: PeriodType, horizon: int) -> int:
+    """Calculate how many daily forecast points are needed."""
+    if period == PeriodType.DAILY:
+        return horizon
+    if period == PeriodType.WEEKLY:
+        # ~7 days per week, add buffer
+        return horizon * 7 + 7
+    # MONTHLY
+    # ~30 days per month, add buffer
+    return horizon * 30 + 30
 
 
 def _format_date(dt: datetime, period: PeriodType) -> str:
@@ -106,14 +93,6 @@ def _format_date(dt: datetime, period: PeriodType) -> str:
         iso = dt.isocalendar()
         return f"{iso[0]}-W{iso[1]:02d}Z"
     return dt.strftime("%Y-%m-%dZ")
-
-
-def _periods_needed(period: PeriodType, horizon: int) -> int:
-    if period == PeriodType.DAILY:
-        return horizon
-    if period == PeriodType.WEEKLY:
-        return horizon * 7 + 7
-    return horizon * 31 + 31
 
 
 def _unit_for(forecast_type: ForecastType) -> str:
@@ -126,20 +105,27 @@ def _forecast_one(
     params: ForecastParameters,
 ) -> ItemForecastResult:
     try:
-        series = _to_series(item)
-        if len(series) < 2:
+        daily_series = _to_series(item)
+        if len(daily_series) < 2:
             return ItemForecastResult(
                 itemId=item.itemId,
                 status="error",
                 error="At least 2 historical data points are required",
             )
 
-        model = select_model(series)
-        model.fit(series)
+        # Always work with daily series for model selection and fitting
+        model = select_model(daily_series)
+        model.fit(daily_series)
+        
+        # Calculate how many daily points to forecast
         daily_horizon = _periods_needed(params.period, params.horizon)
+        
+        # Get daily forecast
         daily_forecast = model.predict(horizon=daily_horizon)
-        historical_length = len(item.historicalData)
-        rows = _aggregate_to_period(daily_forecast, params.period, params.horizon, historical_length)
+        
+        # Aggregate to requested period
+        rows = _aggregate_daily_to_period(daily_forecast, params.period, params.horizon)
+        
         unit = _unit_for(forecast_type)
         points = [
             ForecastDataPoint(
