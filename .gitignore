@@ -22,3 +22,10 @@ env/
 # data/retail_store_inventory.csv
 
 sample_request.json
+
+API_DOCS.md
+AI_SERVICE_CHANGES.md
+CLAUDE.md
+skills-lock.json
+SySTEM_OVERVIEW.md
+.claude

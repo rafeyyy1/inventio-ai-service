@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 class ForecastType(str, Enum):
     STOCK_DEMAND = "stock_demand"
     SALES_REVENUE = "sales_revenue"
+    PURCHASE_COST = "purchase_cost"
 
 
 class PeriodType(str, Enum):

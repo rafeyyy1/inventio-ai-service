@@ -51,6 +51,7 @@ def _to_series(item: ItemForecastRequest) -> pd.Series:
     values = [p.value for p in points]
     series = pd.Series(values, index=index, name="value", dtype=float)
     series.index = series.index.tz_convert(None) if series.index.tz is not None else series.index
+    series = series.groupby(level=0).sum()
     return series.asfreq("D").ffill()
 
 
