@@ -150,6 +150,23 @@ def _forecast_one(
         )
 
 
+@app.get("/")
+def root() -> dict:
+    """Root endpoint - redirect info to /docs"""
+    return {
+        "service": "Inventio AI Service",
+        "version": "1.0.0",
+        "docs": "/docs",
+        "health": "/health",
+    }
+
+
+@app.get("/health")
+def health() -> dict:
+    """Health check endpoint."""
+    return {"status": "ok", "service": "inventio-ai-service"}
+
+
 @app.post("/api/predict", response_model=ForecastResponse)
 def predict(request: ForecastRequest) -> ForecastResponse:
     if not request.items:
