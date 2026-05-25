@@ -1,7 +1,4 @@
-"""FastAPI application for the Inventio forecasting service.
-
-Single endpoint: POST /api/predict (batch forecasting per item).
-"""
+"""Inventio AI forecasting API."""
 
 import os
 import uuid
@@ -27,7 +24,7 @@ from models import select_model
 
 app = FastAPI(
     title="Inventio AI Service",
-    description="Batch forecasting service for the Inventio inventory system.",
+    description="Forecasting service for inventory management.",
     version="1.0.0",
 )
 
@@ -41,11 +38,11 @@ app.add_middleware(
 )
 
 
-def _parse_iso(s: str) -> datetime:
+def _parse_iso(s):
     return datetime.fromisoformat(s.replace("Z", "+00:00"))
 
 
-def _to_series(item: ItemForecastRequest) -> pd.Series:
+def _to_series(item):
     points = sorted(item.historicalData, key=lambda p: p.date)
     index = pd.DatetimeIndex([_parse_iso(p.date) for p in points])
     values = [p.value for p in points]
@@ -54,38 +51,30 @@ def _to_series(item: ItemForecastRequest) -> pd.Series:
     return series.asfreq("D").ffill()
 
 
-def _aggregate_daily_to_period(daily_forecast: pd.Series, period: PeriodType, horizon: int) -> List[tuple[datetime, float]]:
-    """Aggregate daily forecast to monthly/weekly/daily based on period and horizon."""
+def _aggregate_daily_to_period(daily_forecast, period, horizon):
     if period == PeriodType.DAILY:
         rows = list(daily_forecast.items())[:horizon]
         return [(idx.to_pydatetime(), float(val)) for idx, val in rows]
 
     if period == PeriodType.WEEKLY:
-        # Resample to weekly and take horizon weeks
         weekly = daily_forecast.resample("W").mean()
         rows = list(weekly.items())[:horizon]
         return [(idx.to_pydatetime(), float(val)) for idx, val in rows]
 
-    # MONTHLY
-    # Resample to monthly and take horizon months
     monthly = daily_forecast.resample("MS").mean()
     rows = list(monthly.items())[:horizon]
     return [(idx.to_pydatetime(), float(val)) for idx, val in rows]
 
 
-def _periods_needed(period: PeriodType, horizon: int) -> int:
-    """Calculate how many daily forecast points are needed."""
+def _periods_needed(period, horizon):
     if period == PeriodType.DAILY:
         return horizon
     if period == PeriodType.WEEKLY:
-        # ~7 days per week, add buffer
         return horizon * 7 + 7
-    # MONTHLY
-    # ~30 days per month, add buffer
     return horizon * 30 + 30
 
 
-def _format_date(dt: datetime, period: PeriodType) -> str:
+def _format_date(dt, period):
     if period == PeriodType.MONTHLY:
         return dt.strftime("%Y-%m-01Z")
     if period == PeriodType.WEEKLY:
@@ -94,15 +83,11 @@ def _format_date(dt: datetime, period: PeriodType) -> str:
     return dt.strftime("%Y-%m-%dZ")
 
 
-def _unit_for(forecast_type: ForecastType) -> str:
+def _unit_for(forecast_type):
     return "units" if forecast_type == ForecastType.STOCK_DEMAND else "IDR"
 
 
-def _forecast_one(
-    item: ItemForecastRequest,
-    forecast_type: ForecastType,
-    params: ForecastParameters,
-) -> ItemForecastResult:
+def _forecast_one(item, forecast_type, params):
     try:
         daily_series = _to_series(item)
         if len(daily_series) < 2:
