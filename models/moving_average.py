@@ -13,7 +13,7 @@ class MovingAverageModel:
         self.window = window
         self.history: Optional[pd.Series] = None
 
-    def fit(self, series: pd.Series) -> "MovingAverageModel":
+    def fit(self, series: pd.Series):
         if len(series) < 2:
             raise ValueError("series must have at least 2 observations")
         self.history = series.copy()

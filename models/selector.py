@@ -1,4 +1,4 @@
-"""Pick a model based on simple data characteristics."""
+"""Model selection based on trend strength."""
 
 from typing import Union
 
@@ -23,7 +23,6 @@ def detect_trend_strength(series: pd.Series) -> float:
 
 
 def select_model(series: pd.Series, trend_threshold: float = 0.7) -> Model:
-    """Auto-select Linear Regression jika trend strong (≥0.7), else Moving Average."""
     strength = detect_trend_strength(series)
     if strength >= trend_threshold:
         return LinearTrendModel()

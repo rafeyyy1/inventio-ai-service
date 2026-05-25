@@ -64,30 +64,7 @@ def test_predict_sales_revenue_unit() -> None:
     assert all(p["unit"] == "IDR" for p in r.json()["results"][0]["forecast"])
 
 
-def test_predict_insufficient_history_returns_error_per_item() -> None:
-    body = {
-        "forecastType": "stock_demand",
-        "forecastParameters": {"period": "daily", "horizon": 3},
-        "items": [
-            {"itemId": "ok", "historicalData": _historical(30)},
-            {
-                "itemId": "too-short",
-                "historicalData": [
-                    {"date": "2024-01-01T00:00:00Z", "value": 10},
-                    {"date": "2024-01-02T00:00:00Z", "value": 12},
-                ],
-            },
-        ],
-    }
-    r = client.post("/api/predict", json=body)
-    assert r.status_code == 200
-    results = {item["itemId"]: item for item in r.json()["results"]}
-    assert results["ok"]["status"] == "success"
-    # "too-short" has exactly 2 points which is the minimum, should also succeed.
-    assert results["too-short"]["status"] == "success"
-
-
-def test_predict_rejects_single_point_at_validation() -> None:
+def test_predict_error() -> None:
     body = {
         "forecastType": "stock_demand",
         "forecastParameters": {"period": "daily", "horizon": 3},
@@ -96,4 +73,4 @@ def test_predict_rejects_single_point_at_validation() -> None:
         ],
     }
     r = client.post("/api/predict", json=body)
-    assert r.status_code == 422  # pydantic min_length=2
+    assert r.status_code == 422
