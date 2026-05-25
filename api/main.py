@@ -52,7 +52,7 @@ def _to_series(item):
     return series.asfreq("D").ffill()
 
 
-def _aggregate_daily_to_period(daily_forecast, period, horizon):
+def _aggregate_daily_to_period(daily_forecast, period, horizon, historical_day=None, last_historical_date=None):
     if period == PeriodType.DAILY:
         rows = list(daily_forecast.items())[:horizon]
         return [(idx.to_pydatetime(), float(val)) for idx, val in rows]
@@ -62,8 +62,27 @@ def _aggregate_daily_to_period(daily_forecast, period, horizon):
         rows = list(weekly.items())[:horizon]
         return [(idx.to_pydatetime(), float(val)) for idx, val in rows]
 
+    # For MONTHLY: aggregate by month, but adjust day to match historical pattern
     monthly = daily_forecast.resample("MS").mean()
-    rows = list(monthly.items())[:horizon]
+    
+    # Filter out any rows that fall on or before the last historical date (BEFORE slicing)
+    if last_historical_date is not None:
+        filtered_rows = [(idx, val) for idx, val in monthly.items() if idx > last_historical_date]
+    else:
+        filtered_rows = list(monthly.items())
+    
+    # Now take only horizon items from filtered rows
+    rows = filtered_rows[:horizon]
+    
+    # If historical data had a specific day (e.g., 15th), adjust forecast dates
+    if historical_day is not None and historical_day > 1:
+        adjusted_rows = []
+        for idx, val in rows:
+            # Get the first day of month, then add (historical_day - 1) days
+            adjusted_date = idx.replace(day=1) + pd.Timedelta(days=historical_day - 1)
+            adjusted_rows.append((adjusted_date.to_pydatetime(), float(val)))
+        return adjusted_rows
+    
     return [(idx.to_pydatetime(), float(val)) for idx, val in rows]
 
 
@@ -77,7 +96,8 @@ def _periods_needed(period, horizon):
 
 def _format_date(dt, period):
     if period == PeriodType.MONTHLY:
-        return dt.strftime("%Y-%m-01Z")
+        # Keep the day as-is from the datetime object (don't force to 01)
+        return dt.strftime("%Y-%m-%dZ")
     if period == PeriodType.WEEKLY:
         iso = dt.isocalendar()
         return f"{iso[0]}-W{iso[1]:02d}Z"
@@ -108,8 +128,12 @@ def _forecast_one(item, forecast_type, params):
         # Get daily forecast
         daily_forecast = model.predict(horizon=daily_horizon)
         
+        # Extract day-of-month and last date from last historical date (for date alignment)
+        historical_day = daily_series.index[-1].day
+        last_historical_date = daily_series.index[-1]
+        
         # Aggregate to requested period
-        rows = _aggregate_daily_to_period(daily_forecast, params.period, params.horizon)
+        rows = _aggregate_daily_to_period(daily_forecast, params.period, params.horizon, historical_day, last_historical_date)
         
         unit = _unit_for(forecast_type)
         points = [
